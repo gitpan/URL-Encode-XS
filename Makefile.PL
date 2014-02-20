@@ -10,8 +10,8 @@ readme_from    'lib/URL/Encode/XS.pm';
 requires       'Carp'             => '0';
 requires       'Exporter'         => '0';
 requires       'XSLoader'         => '0';
-requires       'URL::Encode'      => '0';
-test_requires  'Test::More'       => '0.47';
+requires       'URL::Encode'      => '0.03';
+test_requires  'Test::More'       => '0.88';
 makemaker_args INC => '-I.';
 
 tests 't/*.t t/*/*.t';

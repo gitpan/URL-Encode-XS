@@ -5,15 +5,29 @@
 #define NEED_sv_2pv_flags
 #include "ppport.h"
 
-#define HEXVAL(c) (((c) >= '0' && (c) <= '9') ? ((c) - '0'     ) :  \
-                   ((c) >= 'A' && (c) <= 'F') ? ((c) - 'A' + 10) :  \
-                   ((c) >= 'a' && (c) <= 'f') ? ((c) - 'a' + 10) : 0)
-
-#define HEXPAIR(p) ((HEXVAL((p)[0]) << 4) | HEXVAL((p)[1]))
-
 static SV *
 url_decode(pTHX_ const char *s, const STRLEN len, SV *dsv) {
-    const char *e = s + len;
+    #define __ 0xFF
+    static const U8 hexval[0x100] = {
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* 00-0F */
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* 10-1F */
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* 20-2F */
+         0, 1, 2, 3, 4, 5, 6, 7, 8, 9,__,__,__,__,__,__, /* 30-3F */
+        __,10,11,12,13,14,15,__,__,__,__,__,__,__,__,__, /* 40-4F */
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* 50-5F */
+        __,10,11,12,13,14,15,__,__,__,__,__,__,__,__,__, /* 60-6F */
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* 70-7F */
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* 80-8F */
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* 90-9F */
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* A0-AF */
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* B0-BF */
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* C0-CF */
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* D0-DF */
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* E0-EF */
+        __,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__, /* F0-FF */
+    };
+    #undef __
+    const char *e;
     char *d;
 
     if (!dsv)
@@ -22,21 +36,32 @@ url_decode(pTHX_ const char *s, const STRLEN len, SV *dsv) {
     SvUPGRADE(dsv, SVt_PV);
     d = SvGROW(dsv, len + 1);
 
+    e = s + len - 2;
     for (; s < e; s++, d++) {
-        switch (*s) {
-            case '+':
-                *d = ' ';
-                break;
-            case '%':
-                if (s + 2 < e && isxdigit(s[1]) && isxdigit(s[2])) {
-                    *d = (char)HEXPAIR(s + 1);
-                    s += 2;
-                    break;
-                }
-            default:
-                *d = *s;
+        const U8 c = *s;
+        if (c == '+')
+            *d = ' ';
+        else if (c != '%')
+            *d = c;
+        else {
+            const U8 v1 = hexval[(U8)*++s];
+            const U8 v2 = hexval[(U8)*++s];
+            if ((v1 | v2) != 0xFF)
+                *d = (v1 << 4) | v2;
+            else
+                *d = c, s -= 2;
         }
     }
+
+    e += 2;
+    for (; s < e; s++, d++) {
+        const U8 c = *s;
+        if (c == '+')
+            *d = ' ';
+        else
+            *d = c;
+    }
+
     *d = 0;
     SvCUR_set(dsv, d - SvPVX(dsv));
     SvPOK_only(dsv);
@@ -120,57 +145,76 @@ struct _ust {
 };
 
 static void
-url_params_each(pTHX_ const char *s, const STRLEN len, const ust_t *u) {
-    const char *send = s + len;
-    const char *k, *kend, *v, *vend;
+url_params_each(pTHX_ const char *cur, const STRLEN len, const ust_t *u) {
+    const char * const end = cur + len;
+    const char *key, *val;
+    STRLEN klen, vlen;
     SV *tmpsv = NULL;
     bool is_utf8 = FALSE;
 
-    while (s < send) {
-        if ((vend = (const char *)memchr(s, '&', send - s)) == NULL)
-            vend = send;
-        if ((kend = (const char *)memchr(s, '=', vend - s)) == NULL) {
-            s = vend + (vend != send);
-            continue;
+    while (cur < end) {
+        for (key = cur; cur < end; cur++) {
+            const char c = *cur;
+            if (c == '=' || c == '&' || c == ';')
+                break;
+        }
+        klen = cur - key;
+        if (*cur != '=') {
+            val  = NULL;
+            vlen = 0;
+        }
+        else {
+            for (val = ++cur; cur < end; cur++) {
+                const char c = *cur;
+                if (c == '&' || c == ';')
+                    break;
+            }
+            vlen = cur - val;
         }
 
-        k = s;
-        v = kend + 1;
-
-        if (u->decode == &url_decode_utf8 || url_encoded(k, kend - k)) {
-            tmpsv   = u->decode(aTHX_ k, kend - k, tmpsv);
-            k       = (const char *)SvPVX(tmpsv);
-            kend    = (const char *)SvEND(tmpsv);
+        if (u->decode == &url_decode_utf8 || url_encoded(key, klen)) {
+            tmpsv   = u->decode(aTHX_ key, klen, tmpsv);
+            key     = (const char *)SvPVX(tmpsv);
+            klen    = SvCUR(tmpsv);
             if (u->decode == &url_decode_utf8)
                 is_utf8 = SvUTF8(tmpsv);
         }
-        u->cb(aTHX_ u, k, kend - k, is_utf8, v, vend - v);
-        s = vend + 1;
+        u->cb(aTHX_ u, key, klen, is_utf8, val, vlen);
+        cur++;
+    }
+
+    if (len) {
+        const char c = end[-1];
+        if (c == '&' || c == ';')
+            u->cb(aTHX_ u, "", 0, FALSE, NULL, 0);
     }
 }
 
 static void
 url_params_mixed_cb(pTHX_ const ust_t *u, const char *k, STRLEN klen, bool is_utf8, const char *v, STRLEN vlen) {
-    SV **svp;
+    SV **svp, *sv;
 
-    svp = hv_fetch((HV *)u->sv, k, is_utf8 ? -klen : klen, 1);
-
-    if (!SvOK(*svp)) {
-        u->decode(aTHX_ v, vlen, *svp);
+    if (!hv_exists((HV *)u->sv, k, is_utf8 ? -klen : klen)) {
+        svp = hv_fetch((HV *)u->sv, k, is_utf8 ? -klen : klen, 1);
+        if (v)
+            u->decode(aTHX_ v, vlen, *svp);
     }
     else {
         SV *val = newSV(0);
         AV *av;
-        if (SvPOK(*svp)) {
-            SV *sv = *svp;
-            *svp = newRV_noinc((SV *)(av = newAV()));
+
+        svp = hv_fetch((HV *)u->sv, k, is_utf8 ? -klen : klen, 0);
+        if (SvROK(*svp))
+            av = (AV *)SvRV(*svp);
+        else {
+            sv = *svp;
+            av = newAV();
+            *svp = newRV_noinc((SV *)av);
             av_push(av, sv);
         }
-        else {
-            av = (AV *)SvRV(*svp);
-        }
         av_push(av, val);
-        u->decode(aTHX_ v, vlen, val);
+        if (v)
+            u->decode(aTHX_ v, vlen, val);
     }
 }
 
@@ -182,16 +226,16 @@ url_params_multi_cb(pTHX_ const ust_t *u, const char *k, STRLEN klen, bool is_ut
     svp = hv_fetch((HV *)u->sv, k, is_utf8 ? -klen : klen, 1);
     val = newSV(0);
 
-    if (SvROK(*svp)) {
+    if (SvROK(*svp))
         av = (AV *)SvRV(*svp);
-    }
     else {
         av = newAV();
         SvREFCNT_dec(*svp);
         *svp = newRV_noinc((SV *)av);
     }
     av_push(av, val);
-    u->decode(aTHX_ v, vlen, val);
+    if (v)
+        u->decode(aTHX_ v, vlen, val);
 }
 
 static void
@@ -206,7 +250,8 @@ url_params_flat_cb(pTHX_ const ust_t *u, const char *k, STRLEN klen, bool is_utf
 
     av_push((AV *)u->sv, key);
     av_push((AV *)u->sv, val);
-    u->decode(aTHX_ v, vlen, val);
+    if (v)
+        u->decode(aTHX_ v, vlen, val);
 }
 
 static void
@@ -215,7 +260,10 @@ url_params_each_cb(pTHX_ const ust_t *u, const char *k, STRLEN klen, bool is_utf
     dSP;
 
     key = sv_2mortal(newSVpvn(k, klen));
-    val = u->decode(aTHX_ v, vlen, sv_2mortal(newSV(0)));
+    val = sv_2mortal(newSV(0));
+
+    if (v)
+        u->decode(aTHX_ v, vlen, val);
 
     if (is_utf8)
         SvUTF8_on(key);

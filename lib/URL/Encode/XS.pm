@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 BEGIN {
-    our $VERSION = '0.01';
+    our $VERSION = '0.03';
     our @EXPORT_OK = qw[ url_encode
                          url_encode_utf8
                          url_decode
@@ -43,7 +43,7 @@ Christian Hansen, E<lt>chansen@cpan.orgE<gt>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2011 by Christian Hansen
+Copyright (C) 2014 by Christian Hansen
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself.
